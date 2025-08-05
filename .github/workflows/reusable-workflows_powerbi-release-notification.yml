@@ -1,0 +1,104 @@
+name: Reusable-Workflows Power BI Release Notification
+
+on:
+  workflow_call:
+    inputs:
+      email_recipients:
+        description: 'Correo o correos a los que se enviará la notificación (separados por coma)'
+        required: true
+        type: string
+
+jobs:
+  send-email:
+    if: ${{ github.event.pull_request.merged == true && (github.event.pull_request.base.ref == 'release' || github.event.pull_request.base.ref == 'main') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Definir mensaje según la rama
+        run: |
+          if [ "${{ github.event.pull_request.base.ref }}" == "release" ]; then
+            echo "SYNC_MESSAGE=Se solicita de favor su apoyo para sincronizar el workspace PPRD" >> $GITHUB_ENV
+          elif [ "${{ github.event.pull_request.base.ref }}" == "main" ]; then
+            echo "SYNC_MESSAGE=Se solicita de favor su apoyo para sincronizar el workspace PROD" >> $GITHUB_ENV
+          fi
+
+      - name: Enviar correo
+        uses: dawidd6/action-send-mail@v4
+        with:
+          server_address: smtp.office365.com
+          server_port: 587
+          username: chacui1951@comunidad.unam.mx
+          password: ${{ secrets.ORG_SERVICIOS_EMAIL_SECRET }}
+          from: chacui1951@comunidad.unam.mx
+          to: ${{ inputs.email_recipients }}
+          subject: "Notificación de GitHub. Repositorio: ${{ github.repository }}"
+          html_body: |
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <style>
+                body {
+                  font-family: Arial, sans-serif;
+                  line-height: 1.6;
+                  background-color: #f4f4f9;
+                  color: #333;
+                  margin: 0;
+                  padding: 20px;
+                }
+                .container {
+                  max-width: 600px;
+                  margin: auto;
+                  background: #fff;
+                  padding: 20px;
+                  border-radius: 8px;
+                  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+                }
+                .logo {
+                  text-align: center;
+                  margin-bottom: 20px;
+                }
+                .logo img {
+                  max-width: 70px;
+                  height: auto;
+                }
+                h1 {
+                  color: #0078d4;
+                  font-size: 24px;
+                  text-align: center;
+                }
+                p {
+                  font-size: 16px;
+                  margin: 10px 0;
+                }
+                a {
+                  color: #0078d4;
+                  text-decoration: none;
+                }
+                a:hover {
+                  text-decoration: underline;
+                }
+                .footer {
+                  text-align: center;
+                  margin-top: 20px;
+                  font-size: 12px;
+                  color: #888;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="logo">
+                  <img src="https://avatars.githubusercontent.com/u/73250510?s=400&u=2d607bb9f9f10b5e11d6f21b4b6cbe2f64f52c44&v=4" alt="Logo">
+                </div>
+                <h1>Notificación de Pull Request fusionada en la rama ${{ github.event.pull_request.base.ref }}</h1>
+                <p>Una pull request fue fusionada exitosamente.</p>
+                <p><strong>Repositorio:</strong> <a href="https://github.com/${{ github.repository }}">${{ github.repository }}</a></p>
+                <p><strong>Pull Request:</strong> <a href="${{ github.event.pull_request.html_url }}">${{ github.event.pull_request.title }}</a></p>
+                
+                <p><strong>${{ env.SYNC_MESSAGE }}</strong></p>
+
+                <div class="footer">
+                  <p>Este es un correo automatizado por la organización ti-tecnologico-de-monterrey-oficial.</p>
+                </div>
+              </div>
+            </body>
+            </html>
