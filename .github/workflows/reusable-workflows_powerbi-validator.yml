@@ -1,0 +1,144 @@
+name: Reusable-Workflows Power BI Validator
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        required: true
+        type: string
+        description: 'The path to the directory where datasets and reports are located.'
+
+jobs:
+  Build_Datasets:
+    runs-on: windows-latest
+
+    steps:
+    - name: Enable long paths in Git
+      run: git config --system core.longpaths true
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up directories and download Tabular Editor
+      run: |
+        $path = "${{ inputs.path }}"
+        $tempPath = "$path\_temp"
+        $toolPath = "$path\_tools\TE"
+        New-Item -ItemType Directory -Path $tempPath -ErrorAction SilentlyContinue | Out-Null
+        New-Item -ItemType Directory -Path $toolPath -ErrorAction SilentlyContinue | Out-Null
+        
+        Write-Host "Downloading Tabular Editor binaries"
+        $downloadUrl = "https://github.com/TabularEditor/TabularEditor/releases/latest/download/TabularEditor.Portable.zip"
+        $zipFile = "$tempPath\TabularEditor.zip"
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile
+        Expand-Archive -Path $zipFile -DestinationPath $toolPath -Force
+
+        Write-Host "Downloading Dataset default rules"
+        $rulesUrl = "https://raw.githubusercontent.com/microsoft/Analysis-Services/master/BestPracticeRules/BPARules.json"
+        Invoke-WebRequest -Uri $rulesUrl -OutFile "$tempPath\Rules-Dataset.json"
+      shell: pwsh
+
+    - name: Run Dataset Rules
+      id: tf-plan-string
+      run: |
+              $path = "${{ inputs.path }}"
+              $tempPath = "$path\_temp"
+              $toolPath = "$path\_Tools\TE\TabularEditor.exe"
+              $rulesPath = "$path\Rules-Dataset.json"
+              if (!(Test-Path $rulesPath))
+              {
+                  echo "Running downloaded rules" >> $ENV:GITHUB_STEP_SUMMARY 
+                  $rulesPath = "$tempPath\Rules-Dataset.json"
+              }
+              
+              $itemsFolders = Get-ChildItem  -Path $path -recurse -include ("*.pbidataset", "*.pbism")
+
+              echo "## Dataset Rules" >> $ENV:GITHUB_STEP_SUMMARY
+              echo "<details><summary>Click to expand</summary>" >> $ENV:GITHUB_STEP_SUMMARY
+              echo "" >> $ENV:GITHUB_STEP_SUMMARY
+              echo '```datasets' >> $ENV:GITHUB_STEP_SUMMARY
+
+              foreach($itemFolder in $itemsFolders)
+              {	
+                  $itemPath = "$($itemFolder.Directory.FullName)\definition"
+                  if (!(Test-Path $itemPath))
+                  {
+                      $itemPath = "$($itemFolder.Directory.FullName)\model.bim"
+
+                      if (!(Test-Path $itemPath))
+                      {
+                          throw "Cannot find semantic model definition."
+                      }
+                  }
+                  echo "##[group]Running rules for: '$itemPath'" >> $ENV:GITHUB_STEP_SUMMARY 
+                  $outputFile = "$tempPath\output.log"
+                  $outputFileError = "$tempPath\outputerror.log"
+                  Start-Process -FilePath "$toolPath" -ArgumentList """$itemPath"" -A ""$rulesPath"" -V" -NoNewWindow -Wait -RedirectStandardOutput $outputFile -RedirectStandardError $outputFileError
+                  $outputContent = Get-Content $outputFile
+                  echo $outputContent >> $ENV:GITHUB_STEP_SUMMARY
+                  echo "##[endgroup]" >> $ENV:GITHUB_STEP_SUMMARY 
+              
+              }
+                  echo '```' >> $ENV:GITHUB_STEP_SUMMARY
+                  echo "</details>" >> $ENV:GITHUB_STEP_SUMMARY
+      shell: pwsh   
+
+  Build_Reports:
+    runs-on: windows-latest
+    steps:
+
+    - name: Enable long paths in Git
+      run: git config --system core.longpaths true  
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download PBIXInspector
+      run: |
+              $path = "${{ inputs.path }}"
+              $tempPath = "$path\_temp"
+              $toolPath = "$path\_Tools\PBIInspector"
+              New-Item -ItemType Directory -Path $tempPath -ErrorAction SilentlyContinue | Out-Null
+
+              Write-Host "##[debug]Downloading PBI Inspector"
+              $downloadUrl = "https://github.com/NatVanG/PBI-Inspector/releases/latest/download/win-x64-CLI.zip" 
+              $zipFile = "$tempPath\PBIXInspector.zip"
+              Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile
+              Expand-Archive -Path $zipFile -DestinationPath $toolPath -Force                            
+
+              Write-Host "##[debug]Downloading Report default rules"
+              $downloadUrl = "https://raw.githubusercontent.com/NatVanG/PBI-Inspector/main/Rules/Base-rules.json"
+              Invoke-WebRequest -Uri $downloadUrl -OutFile "$tempPath\Rules-Report.json"     
+      shell: pwsh
+
+    - name: Run Report Rules
+      run: |
+              $path = "${{ inputs.path }}"
+              $tempPath = "$path\_temp"
+              $toolPath =  "$path\_Tools\PBIInspector\win-x64\CLI\PBIXInspectorCLI.exe"
+              $rulesPath = "$path\Rules-Report.json"
+              if (!(Test-Path $rulesPath))
+              {
+                 Write-Host "Running default downloaded rules"
+                 $rulesPath = "$tempPath\Rules-Report.json"
+              }
+              $itemsFolders = Get-ChildItem  -Path $path -recurse -include *.pbir
+
+              echo "## Reports Rules" >> $ENV:GITHUB_STEP_SUMMARY
+              echo "<details><summary>Click to expand</summary>" >> $ENV:GITHUB_STEP_SUMMARY
+              echo "" >> $ENV:GITHUB_STEP_SUMMARY
+              echo '```reports' >> $ENV:GITHUB_STEP_SUMMARY
+
+
+              foreach($itemFolder in $itemsFolders)
+              {	
+                $outputFile = "$tempPath\output.log"
+                $outputFileError = "$tempPath\outputerror.log"
+                $itemPath = $itemFolder.Directory.FullName
+                echo "##[group]Running rules for: '$itemPath'" >> $ENV:GITHUB_STEP_SUMMARY
+                Start-Process -FilePath "$toolPath" -ArgumentList "-pbipreport ""$itemPath"" -rules ""$rulesPath"" -formats ""ADO""" -NoNewWindow -Wait  -RedirectStandardOutput $outputFile -RedirectStandardError $outputFileError
+                $outputContent = Get-Content $outputFile
+                echo $outputContent >> $ENV:GITHUB_STEP_SUMMARY
+                echo "##[endgroup]" >> $ENV:GITHUB_STEP_SUMMARY
+              }     
+      shell: pwsh
