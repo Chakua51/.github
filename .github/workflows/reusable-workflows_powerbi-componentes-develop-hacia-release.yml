@@ -1,0 +1,227 @@
+name: Reusable-Workflows Power BI Componentes Develop hacia Release
+
+on:
+  workflow_call:
+    inputs:
+      componente:
+        description: 'Componente a seleccionar'
+        required: true
+        type: string
+      folder_mapping:
+        description: 'JSON con el mapeo de componentes a carpetas. Puede ser un string o un array.'
+        required: true
+        type: string
+      reviewer:
+        description: 'Usuario que revisará el PR'
+        required: true
+        type: string
+      modelDBID:
+        description: 'ID para reemplazar pbiModelDatabaseName en definition.pbir (opcional)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  release-component:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout develop branch
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+
+      - name: Set up Git user as bot
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Obtener la(s) carpeta(s) correspondiente(s)
+        id: set_selected_component
+        run: |
+          COMPONENT="${{ inputs.componente }}"
+          MAPPING_JSON='${{ inputs.folder_mapping }}'
+          
+          # Extrae el mapeo correspondiente al componente
+          COMPONENT_MAPPING=$(echo "$MAPPING_JSON" | jq --arg COMPONENT "$COMPONENT" '.[$COMPONENT]')
+          
+          if [[ "$COMPONENT_MAPPING" == "null" || -z "$COMPONENT_MAPPING" ]]; then
+            echo "Componente no válido: $COMPONENT"
+            exit 1
+          fi
+          
+          # Determina si el valor es un array o un string
+          TYPE=$(echo "$COMPONENT_MAPPING" | jq -r 'if type=="array" then "array" else "string" end')
+          
+          if [ "$TYPE" == "array" ]; then
+            # Convierte el array a una lista separada por saltos de línea, preservando espacios
+            FOLDERS=$(echo "$COMPONENT_MAPPING" | jq -r '.[]' | paste -sd $'\n' -)
+          else
+            FOLDERS=$(echo "$COMPONENT_MAPPING" | jq -r '.')
+          fi
+          
+          echo "Selected component: $COMPONENT"
+          echo "Mapped folder(s):"
+          echo "$FOLDERS"
+          # Exporta FOLDERS como variable de entorno (con saltos de línea)
+          echo "FOLDERS<<EOF" >> $GITHUB_ENV
+          echo "$FOLDERS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Create a new temporary branch based on develop
+        run: |
+          TEMP_BRANCH_NAME="temp-develop-${{ inputs.componente }}"
+          echo "Creating temporary branch: $TEMP_BRANCH_NAME"
+          git checkout -b "$TEMP_BRANCH_NAME"
+          echo "TEMP_BRANCH_NAME=$TEMP_BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Remove all files except the selected folders and .github
+        run: |
+          echo "Preserving folders:"
+          echo "$FOLDERS"
+          # Crea un array a partir de FOLDERS (separado por saltos de línea)
+          IFS=$'\n' read -r -d '' -a FOLDERS_ARRAY < <(printf '%s\0' "$FOLDERS")
+          for entry in $(ls -A); do
+            # Conserva .git y .github para no eliminar configuraciones importantes
+            if [ "$entry" != ".git" ] && [ "$entry" != ".github" ]; then
+              keep=false
+              for folder in "${FOLDERS_ARRAY[@]}"; do
+                if [ "$entry" == "$folder" ]; then
+                  keep=true
+                  break
+                fi
+              done
+              if [ "$keep" = false ]; then
+                rm -rf "$entry"
+              fi
+            fi
+          done
+          echo "Archivos no deseados eliminados, excepto las carpetas listadas y .github."
+
+      - name: Commit changes after removal
+        run: |
+          git add -A
+          git commit -m "Remove all files except the selected folders" --allow-empty
+
+      - name: Create a temporary branch based on release
+        run: |
+          git fetch origin release
+          RELEASE_TEMP_BRANCH_NAME="hacia-release-${{ inputs.componente }}-$(TZ='America/Mexico_City' date +%Y%m%d_%H%M%S)"
+          git checkout -b "$RELEASE_TEMP_BRANCH_NAME" origin/release
+          echo "Temporary release branch created: $RELEASE_TEMP_BRANCH_NAME"
+          echo "RELEASE_TEMP_BRANCH_NAME=$RELEASE_TEMP_BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Remove existing folders in temporary release branch if they exist
+        run: |
+          IFS=$'\n' read -r -d '' -a FOLDERS_ARRAY < <(printf '%s\0' "$FOLDERS")
+          for folder in "${FOLDERS_ARRAY[@]}"; do
+            if [ -d "$folder" ]; then
+              rm -rf "$folder"
+              echo "Removed existing folder $folder in the temporary release branch."
+            fi
+          done
+
+      - name: Checkout the selected folder(s) and .github from develop
+        run: |
+          # Hacer checkout de .github (se incluye en el branch pero no se menciona en mensajes)
+          git checkout "$TEMP_BRANCH_NAME" -- .github
+          # Hacer checkout de las carpetas seleccionadas
+          IFS=$'\n' read -r -d '' -a FOLDERS_ARRAY < <(printf '%s\0' "$FOLDERS")
+          for folder in "${FOLDERS_ARRAY[@]}"; do
+            git checkout "$TEMP_BRANCH_NAME" -- "$folder"
+          done
+          git add -A
+          # Solo se incluyen en los mensajes las carpetas seleccionadas
+          COMMIT_FOLDERS=$(echo "${FOLDERS_ARRAY[@]}" | paste -sd ', ' -)
+          git commit -m "Enviar componente(s): $COMMIT_FOLDERS de develop hacia rama release"
+
+      - name: Reemplazar pbiModelDatabaseName en definition.pbir si se proporciona modelDBID
+        if: ${{ inputs.modelDBID != '' }}
+        run: |
+          echo "Se proporcionó modelDBID: ${{ inputs.modelDBID }} - Buscando archivos definition.pbir..."
+          IFS=$'\n' read -r -d '' -a FOLDERS_ARRAY < <(printf '%s\0' "$FOLDERS")
+          
+          # Buscar todos los archivos definition.pbir en las carpetas seleccionadas
+          for folder in "${FOLDERS_ARRAY[@]}"; do
+            if [ -d "$folder" ]; then
+              echo "Buscando definition.pbir en $folder..."
+              DEFINITION_FILES=$(find "$folder" -name "definition.pbir" -type f)
+              
+              if [ -n "$DEFINITION_FILES" ]; then
+                echo "Encontrados archivos definition.pbir en $folder:"
+                echo "$DEFINITION_FILES"
+                
+                # Procesar cada archivo encontrado
+                while IFS= read -r file; do
+                  echo "Procesando $file..."
+                  CAMBIOS_REALIZADOS=false
+                  
+                  # Verificar si el archivo contiene la propiedad pbiModelDatabaseName
+                  if grep -q "pbiModelDatabaseName" "$file"; then
+                    echo "Encontrada propiedad pbiModelDatabaseName en $file, reemplazando ID..."
+                    # Reemplazar el ID usando expresión regular
+                    sed -i 's/"pbiModelDatabaseName": *"[0-9a-fA-F-]*"/"pbiModelDatabaseName": "${{ inputs.modelDBID }}"/g' "$file"
+                    echo "ID reemplazado en $file"
+                    CAMBIOS_REALIZADOS=true
+                  else
+                    echo "No se encontró la propiedad pbiModelDatabaseName en $file"
+                  fi
+                  
+                  # Verificar si el archivo contiene connectionString con [DEVL]
+                  if grep -q "connectionString.*\[DEVL\]" "$file"; then
+                    echo "Encontrada cadena de conexión con [DEVL] en $file, reemplazando por [PPRD]..."
+                    # Reemplazar [DEVL] por [PPRD] en connectionString
+                    sed -i 's/\[DEVL\]/\[PPRD\]/g' "$file"
+                    echo "Cadena de conexión actualizada en $file"
+                    CAMBIOS_REALIZADOS=true
+                  else
+                    echo "No se encontró cadena de conexión con [DEVL] en $file"
+                  fi
+                done <<< "$DEFINITION_FILES"
+              else
+                echo "No se encontraron archivos definition.pbir en $folder"
+              fi
+            fi
+          done
+          
+          # Commit de los cambios si se hicieron modificaciones
+          if [[ -n $(git status -s) ]]; then
+            git add -A
+            git commit -m "Actualizar pbiModelDatabaseName y connectionString en archivos definition.pbir"
+            echo "Cambios en definition.pbir commiteados"
+          else
+            echo "No se realizaron cambios en archivos definition.pbir"
+          fi
+
+      - name: Push the temporary release branch
+        run: |
+          git push origin "$RELEASE_TEMP_BRANCH_NAME"
+
+      - name: Crear un Pull Request hacia release
+        run: |
+          # Se usa el mapping de carpetas sin incluir .github
+          COMMIT_FOLDERS=$(echo "$FOLDERS" | paste -sd ', ' -)
+          PR_TITLE="Enviando el componente(s): $COMMIT_FOLDERS hacia la rama release"
+          PR_BODY="Este PR es creado automáticamente para integrar componentes específicos en la rama release."
+            
+          RESPONSE=$(curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d '{
+              "title": "'"$PR_TITLE"'",
+              "body": "'"$PR_BODY"'",
+              "head": "'"$RELEASE_TEMP_BRANCH_NAME"'",
+              "base": "release"
+            }' \
+            https://api.github.com/repos/${{ github.repository }}/pulls)
+  
+          PR_NUMBER=$(echo "$RESPONSE" | jq '.number')
+  
+          # Asignar revisor
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d '{
+              "reviewers": ["${{ inputs.reviewer }}"]
+            }' \
+            https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/requested_reviewers
