@@ -24,11 +24,11 @@ jobs:
       - name: Enviar correo
         uses: dawidd6/action-send-mail@v4
         with:
-          server_address: smtp.office365.com
+          server_address: smtp.gmail.com
           server_port: 587
-          username: chacui1951@comunidad.unam.mx
+          username: gusuk3719@gmail.com
           password: ${{ secrets.ORG_SERVICIOS_EMAIL_SECRET }}
-          from: chacui1951@comunidad.unam.mx
+          from: gusuk3719@gmail.com
           to: ${{ inputs.email_recipients }}
           subject: "Notificación de GitHub. Repositorio: ${{ github.repository }}"
           html_body: |
