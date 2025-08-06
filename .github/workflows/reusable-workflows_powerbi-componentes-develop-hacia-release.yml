@@ -205,7 +205,7 @@ jobs:
           PR_BODY="Este PR es creado automáticamente para integrar componentes específicos en la rama release."
             
           RESPONSE=$(curl -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: token ${{ secrets.OPER_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -d '{
               "title": "'"$PR_TITLE"'",
@@ -219,7 +219,7 @@ jobs:
   
           # Asignar revisor
           curl -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: token ${{ secrets.OPER_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -d '{
               "reviewers": ["${{ inputs.reviewer }}"]
